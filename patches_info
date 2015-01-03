@@ -1,0 +1,221 @@
+// This is a list of patches needed to get Lollipop booting with legacy drivers on the Samsung Galaxy Ace II X (in conjunction with the device, vendor, and kernel trees)
+// If you can't get your build of Lollipop to boot with these patches, give me a logcat and I'll make the appropriate changes to this patching reference
+// Only add the code that is preceded by + at each line
+
+----------------------------------------------------------------------------------------------------------
+//1. In frameworks/native/libs/gui/SurfaceComposerClient.cpp :
+
+status_t SurfaceComposerClient::setActiveConfig(const sp<IBinder>& display, int id) {
+    return ComposerService::getComposerService()->setActiveConfig(display, id);
+}
+
+void SurfaceComposerClient::setDisplayPowerMode(const sp<IBinder>& token,
+        int mode) {
+    ComposerService::getComposerService()->setPowerMode(token, mode);
+}
+
+status_t SurfaceComposerClient::clearAnimationFrameStats() {
+    return ComposerService::getComposerService()->clearAnimationFrameStats();
+}
+
+status_t SurfaceComposerClient::getAnimationFrameStats(FrameStats* outStats) {
+    return ComposerService::getComposerService()->getAnimationFrameStats(outStats);
+}
+
++// TODO: Remove me.  Do not use.
++// This is a compatibility shim for one product whose drivers are depending on
++// this legacy function (when they shouldn't).
++status_t SurfaceComposerClient::getDisplayInfo(
++        int32_t displayId, DisplayInfo* info)
++{
++    return getDisplayInfo(getBuiltInDisplay(displayId), info);
++}
+
+----------------------------------------------------------------------------------------------------------
+//2. In frameworks/native/include/gui/SurfaceComposerClient.h :
+
+    // Get the index of the current active configuration (relative to the list
+    // returned by getDisplayInfo)
+    static int getActiveConfig(const sp<IBinder>& display);
+
+    // Set a new active configuration using an index relative to the list
+    // returned by getDisplayInfo
+    static status_t setActiveConfig(const sp<IBinder>& display, int id);
+
+    /* Triggers screen on/off or low power mode and waits for it to complete */
+    static void setDisplayPowerMode(const sp<IBinder>& display, int mode);
+
++    // TODO: Remove me.  Do not use.
++    // This is a compatibility shim for one product whose drivers are depending on
++    // this legacy function (when they shouldn't).
++    static status_t getDisplayInfo(int32_t displayId, DisplayInfo* info);
+
+----------------------------------------------------------------------------------------------------------
+//3. In frameworks/base/core/jni/android_view_SurfaceControl.cpp :
+
+static void nativeSetDisplayLayerStack(JNIEnv* env, jclass clazz,
+        jobject tokenObj, jint layerStack) {
+    sp<IBinder> token(ibinderForJavaObject(env, tokenObj));
+    if (token == NULL) return;
+
+    SurfaceComposerClient::setDisplayLayerStack(token, layerStack);
+}
+
+static void nativeSetDisplayProjection(JNIEnv* env, jclass clazz,
+        jobject tokenObj, jint orientation,
+        jint layerStackRect_left, jint layerStackRect_top, jint layerStackRect_right, jint layerStackRect_bottom,
+        jint displayRect_left, jint displayRect_top, jint displayRect_right, jint displayRect_bottom) {
+    sp<IBinder> token(ibinderForJavaObject(env, tokenObj));
+    if (token == NULL) return;
+    Rect layerStackRect(layerStackRect_left, layerStackRect_top, layerStackRect_right, layerStackRect_bottom);
+    Rect displayRect(displayRect_left, displayRect_top, displayRect_right, displayRect_bottom);
+    SurfaceComposerClient::setDisplayProjection(token, orientation, layerStackRect, displayRect);
+}
+
++static jboolean nativeGetDisplayInfo(JNIEnv* env, jclass clazz,
++        jobject tokenObj, jobject infoObj) {
++    sp<IBinder> token(ibinderForJavaObject(env, tokenObj));
++    if (token == NULL) return JNI_FALSE;
++
++    DisplayInfo info;
++    if (SurfaceComposerClient::getDisplayInfo(token, &info)) {
++        return JNI_FALSE;
++    }
++
++    env->SetIntField(infoObj, gPhysicalDisplayInfoClassInfo.width, info.w);
++    env->SetIntField(infoObj, gPhysicalDisplayInfoClassInfo.height, info.h);
++    env->SetFloatField(infoObj, gPhysicalDisplayInfoClassInfo.refreshRate, info.fps);
++    env->SetFloatField(infoObj, gPhysicalDisplayInfoClassInfo.density, info.density);
++    env->SetFloatField(infoObj, gPhysicalDisplayInfoClassInfo.xDpi, info.xdpi);
++    env->SetFloatField(infoObj, gPhysicalDisplayInfoClassInfo.yDpi, info.ydpi);
++    env->SetBooleanField(infoObj, gPhysicalDisplayInfoClassInfo.secure, info.secure);
++    return JNI_TRUE;
++}
+
+// Later on in the file :
+
+    {"nativeSetDisplayLayerStack", "(Landroid/os/IBinder;I)V",
+            (void*)nativeSetDisplayLayerStack },
+    {"nativeSetDisplayProjection", "(Landroid/os/IBinder;IIIIIIIII)V",
+            (void*)nativeSetDisplayProjection },
++    {"nativeGetDisplayInfo", "(Landroid/os/IBinder;Landroid/view/SurfaceControl$PhysicalDisplayInfo;)Z",
++            (void*)nativeGetDisplayInfo },
+
+----------------------------------------------------------------------------------------------------------
+//4. In frameworks/base/core/java/android/view/SurfaceControl.java : 
+
+    private static native void nativeSetDisplayLayerStack(
+            IBinder displayToken, int layerStack);
+    private static native void nativeSetDisplayProjection(
+            IBinder displayToken, int orientation,
+            int l, int t, int r, int b,
+            int L, int T, int R, int B);
++    private static native boolean nativeGetDisplayInfo(
++            IBinder displayToken, SurfaceControl.PhysicalDisplayInfo outInfo);
+
+// Later on in the file :
+
+    public static int getActiveConfig(IBinder displayToken) {
+        if (displayToken == null) {
+            throw new IllegalArgumentException("displayToken must not be null");
+        }
+        return nativeGetActiveConfig(displayToken);
+    }
+
+    public static boolean setActiveConfig(IBinder displayToken, int id) {
+        if (displayToken == null) {
+            throw new IllegalArgumentException("displayToken must not be null");
+        }
+        return nativeSetActiveConfig(displayToken, id);
+    }
+
++    public static boolean getDisplayInfo(IBinder displayToken, SurfaceControl.PhysicalDisplayInfo outInfo) {
++        if (displayToken == null) {
++            throw new IllegalArgumentException("displayToken must not be null");
++        }
++        if (outInfo == null) {
++            throw new IllegalArgumentException("outInfo must not be null");
++        }
++        return nativeGetDisplayInfo(displayToken, outInfo);
++    }
+
+----------------------------------------------------------------------------------------------------------
+//5. In bionic/linker/Android.mk :
+
+LOCAL_CPPFLAGS += \
+    -std=gnu++11 \
+
+# We need to access Bionic private headers in the linker.
+LOCAL_CFLAGS += -I$(LOCAL_PATH)/../libc/
+
++ifeq ($(TARGET_NEEDS_NON_PIE_SUPPORT),true)
++  LOCAL_CFLAGS += -DENABLE_NON_PIE_SUPPORT
++endif
+
+----------------------------------------------------------------------------------------------------------
+//6. In bionic/linker/linker.cpp :
+
+        case R_ARM_REL32:
+            count_relocation(kRelocRelative);
+            MARK(rel->r_offset);
+            TRACE_TYPE(RELO, "RELO REL32 %08x <- %08x - %08x %s",
+                       reloc, sym_addr, rel->r_offset, sym_name);
+            *reinterpret_cast<ElfW(Addr)*>(reloc) += sym_addr - rel->r_offset;
+            break;
+        case R_ARM_COPY:
++#ifndef ENABLE_NON_PIE_SUPPORT
+            /*
+             * ET_EXEC is not supported so this should not happen.
+             *
+             * http://infocenter.arm.com/help/topic/com.arm.doc.ihi0044d/IHI0044D_aaelf.pdf
+             *
+             * Section 4.7.1.10 "Dynamic relocations"
+             * R_ARM_COPY may only appear in executable objects where e_type is
+             * set to ET_EXEC.
+             */
+            DL_ERR("%s R_ARM_COPY relocations are not supported", si->name);
+            return -1;
++#else
++            if ((si->flags & FLAG_EXE) == 0) {
++                /*
++                 * http://infocenter.arm.com/help/topic/com.arm.doc.ihi0044d/IHI0044D_aaelf.pdf
++                 *
++                 * Section 4.7.1.10 "Dynamic relocations"
++                 * R_ARM_COPY may only appear in executable objects where e_type is
++                 * set to ET_EXEC.
++                 *
++                 * TODO: FLAG_EXE is set for both ET_DYN and ET_EXEC executables.
++                 * We should explicitly disallow ET_DYN executables from having
++                 * R_ARM_COPY relocations.
++                 */
++                DL_ERR("%s R_ARM_COPY relocations only supported for ET_EXEC", si->name);
++                return -1;
++            }
++            count_relocation(kRelocCopy);
++            MARK(rel->r_offset);
++            TRACE_TYPE(RELO, "RELO %08x <- %d @ %08x %s", reloc, s->st_size, sym_addr, sym_name);
++            if (reloc == sym_addr) {
++                ElfW(Sym)* src = soinfo_do_lookup(NULL, sym_name, &lsi, needed);
++
++                if (src == NULL) {
++                    DL_ERR("%s R_ARM_COPY relocation source cannot be resolved", si->name);
++                    return -1;
++                }
++                if (lsi->has_DT_SYMBOLIC) {
++                    DL_ERR("%s invalid R_ARM_COPY relocation against DT_SYMBOLIC shared "
++                           "library %s (built with -Bsymbolic?)", si->name, lsi->name);
++                    return -1;
++                }
++                if (s->st_size < src->st_size) {
++                    DL_ERR("%s R_ARM_COPY relocation size mismatch (%d < %d)",
++                           si->name, s->st_size, src->st_size);
++                    return -1;
++                }
++                memcpy(reinterpret_cast<void*>(reloc),
++                       reinterpret_cast<void*>(src->st_value + lsi->load_bias), src->st_size);
++            } else {
++                DL_ERR("%s R_ARM_COPY relocation target cannot be resolved", si->name);
++                return -1;
++            }
++            break;
++#endif
