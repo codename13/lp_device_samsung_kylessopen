@@ -219,3 +219,32 @@ LOCAL_CFLAGS += -I$(LOCAL_PATH)/../libc/
 +            }
 +            break;
 +#endif
+
+// Later on in the file :
+
+    /* Compute the value of si->base. We can't rely on the fact that
+     * the first entry is the PHDR because this will not be true
+     * for certain executables (e.g. some in the NDK unit test suite)
+     */
+    si->base = 0;
+    si->size = phdr_table_get_load_size(si->phdr, si->phnum);
+    si->load_bias = 0;
+    for (size_t i = 0; i < si->phnum; ++i) {
+      if (si->phdr[i].p_type == PT_PHDR) {
+        si->load_bias = reinterpret_cast<ElfW(Addr)>(si->phdr) - si->phdr[i].p_vaddr;
+        si->base = reinterpret_cast<ElfW(Addr)>(si->phdr) - si->phdr[i].p_offset;
+        break;
+      }
+    }
+    si->dynamic = NULL;
+    si->ref_count = 1;
+
++#ifndef ENABLE_NON_PIE_SUPPORT
+    ElfW(Ehdr)* elf_hdr = reinterpret_cast<ElfW(Ehdr)*>(si->base);
+    if (elf_hdr->e_type != ET_DYN) {
+        __libc_format_fd(2, "error: only position independent executables (PIE) are supported.\n");
+        exit(EXIT_FAILURE);
+    }
++#endif
+
+----------------------------------------------------------------------------------------------------------
